@@ -1,6 +1,13 @@
----
-
 - hosts: "{{ server }}"
-  gather_facts: false
+  remote_user: root
   tasks:
-    - ping:
+  - name: Ping
+    block:
+
+    - name: Ping server
+      ansible.builtin.ping:
+
+    rescue:
+
+    - name: Forzar finalizacion playbook
+      meta: end_play
