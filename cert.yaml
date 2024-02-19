@@ -1,0 +1,141 @@
+- hosts: "{{ server }}"
+  remote_user: root
+  tasks:
+  - name: Crear CA, Certificados
+    block:
+    #####################
+    ##### CREAR CARPETA##
+    #####################
+
+    - name: Crear directorio /AFC/security
+      ansible.builtin.file:
+        path: /AFC/security
+        state: directory
+        mode: '0755'
+
+    # - name: Create a directory
+    #   ansible.builtin.file:
+    #     path: /root/certs
+    #     state: directory
+    #     mode: '0755'
+      ####################
+      ##### CREAR CA #####
+      ####################
+    - name: Crear clave privada
+      community.crypto.openssl_privatekey:
+        path: "{{ serverCAPrivateKey }}"
+        passphrase: "{{ secret_ca_passphrase }}"
+        cipher: auto
+
+    - name: Create certificate signing request (CSR) for CA certificate
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ serverCAPrivateKey }}"
+        privatekey_passphrase: "{{ secret_ca_passphrase }}"
+        common_name: Ansible CA
+        use_common_name_for_san: false # since we do not specify SANs, don't use CN as a SAN
+        basic_constraints:
+        - 'CA:TRUE'
+        basic_constraints_critical: true
+        key_usage:
+        - keyCertSign
+        key_usage_critical: true
+      register: ca_csr
+
+    - name: Create self-signed CA certificate from CSR
+      community.crypto.x509_certificate:
+        path: "{{ serverCAPem }}"
+        csr_content: "{{ ca_csr.csr }}"
+        privatekey_path: "{{ serverCAPrivateKey }}"
+        privatekey_passphrase: "{{ secret_ca_passphrase }}"
+        provider: selfsigned
+
+      #####################
+      #### PRIVATE KEY ####
+      #### CSR ############      
+      #####################
+    - name: Generate private key
+      become: true
+      openssl_privatekey:
+        path: "{{ serverPrivateKey }}"
+        size: 2048
+
+    - name: Generar CSR
+      become: true
+      openssl_csr:
+        path: "{{ serverCsr }}"
+        privatekey_path: "{{ serverPrivateKey }}"
+        country_name: "{{ country_name }}"
+        organization_name: "{{ org_name }}"
+        common_name: "{{ openssl_name }}"
+        subject_alt_name: "DNS:{{ ansible_host }},DNS:{{ ansible_fqdn }}"
+
+    - name: Firmar CSR con CA
+      openssl_certificate:
+        path: "{{ serverCrtCsr }}"
+        csr_path: "{{ serverCsr }}"
+        ownca_path: "{{ serverCAPem }}"
+        ownca_privatekey_path: "{{ serverCAPrivateKey }}"
+        ownca_privatekey_passphrase: "{{ secret_ca_passphrase }}"
+        provider: ownca
+
+      ####################
+      ##### CHAIN ########
+      ####################
+    - name: Add info to certificate
+      # openssl req -new -key {{ serverPrivateKey }} -out {{ serverCsr }}
+      ansible.builtin.shell: cat {{ serverCrtCsr }} {{ serverCAPem }} > {{ serverCrtChain }}
+
+
+    - name: Generate PKCS#12 file
+      ####################
+      ##### PK12 #########
+      ####################
+
+      openssl_pkcs12:
+        action: export
+        path: "{{ serverCrtP12 }}"
+        friendly_name: "afcsystem"
+        privatekey_path: "{{ serverPrivateKey }}"
+        #privatekey_passphrase: "{{ secret_ca_passphrase }}"
+        #passphrase: afcsystem
+        certificate_path: "{{ serverCrtChain }}"
+        #other_certificates: "{{ serverCaPem }}"
+        # Note that if /opt/certs/ca.pem contains multiple certificates,
+        # only the first one will be used. See the other_certificates_parse_all
+        # option for changing this behavior.
+        state: present
+        # - name: Change file ownership, group and permissions
+        #   ansible.builtin.file:
+        #     path: "{{ serverCrtP12 }}"
+        #     mode: '0777'
+
+    - name: Create a keystore for the given certificate/private key pair
+      ####################
+      ##### JKS ##########
+      ####################
+
+      community.general.java_keystore:
+        name: afcsystem
+        certificate_path: "{{ serverCrtP12 }}"
+        private_key_path: "{{ serverPrivateKey }}"
+        password: "{{ secret_ca_passphrase }}"
+        dest: "{{ serverCrtJKS }}"
+        #become: yes
+
+    - name: Recursively change ownership of a directory
+      ansible.builtin.file:
+        path: /AFC/security
+        state: directory
+        recurse: yes
+        mode: '0644'
+    
+    - name: Recursively change ownership of a directory
+      ansible.builtin.file:
+        path: /AFC/security
+        state: directory
+        mode: '0755'
+
+    rescue:
+
+    - name: Forzar finalizacion playbook
+      meta: end_play
